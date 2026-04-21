@@ -1,11 +1,18 @@
 import { Component, Prop, h } from '@stencil/core';
+import type { VNode } from '@stencil/core';
 import { Item, ItemProperty, TooltipSection } from '../../types';
-import { formatPropertyValue, isPropertyVisible, formatCost, getSlotColor } from '../../utils/format';
+import { isPropertyVisible, getSlotColor } from '../../utils/format';
 import { tooltipHeaderBg, tooltipBodyBg, soulIcon } from '../../utils/assets';
+import { injectFonts } from '../../utils/fonts';
 
 export interface ComponentItemInfo {
   name: string;
   image?: string;
+}
+
+interface SectionTiming {
+  key: string;
+  prop: ItemProperty;
 }
 
 @Component({
@@ -26,6 +33,10 @@ export class DlItemTooltip {
   /** Override the item name displayed in the tooltip header. */
   @Prop() nameOverride?: string;
 
+  connectedCallback() {
+    injectFonts();
+  }
+
   private static STATUS_EFFECT_LABELS: Record<string, { label: string; sublabel: string }> = {
     StatusEffectStun: { label: 'Stuns', sublabel: 'targets hit' },
     StatusEffectDisarmed: { label: 'Disarms', sublabel: 'targets hit' },
@@ -34,116 +45,209 @@ export class DlItemTooltip {
     StatusEffectInfiniteClip: { label: 'Infinite Clip', sublabel: '' },
   };
 
-  private renderImportantProp(key: string) {
+  private getFormattedParts(prop: ItemProperty) {
+    const value = prop.value === null || prop.value === undefined ? '' : String(prop.value);
+    const numericValue = Number.parseFloat(value);
+    const sign = Number.isFinite(numericValue) && numericValue >= 0 ? '+' : '';
+    const prefix = prop.prefix?.replace('{s:sign}', sign) ?? '';
+    const postfix = prop.postfix ?? '';
+    const trimmedPostfix = postfix.trim();
+    const suffix = trimmedPostfix && value.endsWith(trimmedPostfix) ? '' : postfix;
+
+    return { prefix, value, suffix };
+  }
+
+  private renderFormattedValue(prop: ItemProperty, shrinkPostfix = false): VNode {
+    const { prefix, value, suffix } = this.getFormattedParts(prop);
+
+    return (
+      <span class={{ 'full-property-value': true, 'is-negative': prop.negative_attribute === true }}>
+        {prefix && <span class="prefix-value">{prefix}</span>}
+        <span class="property-value">{value}</span>
+        {suffix && <span class={{ 'postfix-value': true, 'shrink': shrinkPostfix }}>{suffix}</span>}
+      </span>
+    );
+  }
+
+  private isTimingKey(key: string, prop?: ItemProperty | null): boolean {
+    void prop;
+    return key === 'AbilityCooldown'
+      || key === 'ProcCooldown'
+      || key === 'AbilityChargeUpTime'
+      || key === 'AbilityCooldownBetweenCharge';
+  }
+
+  private renderImportantProp(key: string): VNode | null {
     const item = this.itemData;
     if (!item?.properties) return null;
 
     const prop = item.properties[key];
 
-    // Handle status effects and other keys not present in properties
     if (!prop || !isPropertyVisible(prop)) {
       const statusEffect = DlItemTooltip.STATUS_EFFECT_LABELS[key];
-      if (statusEffect) {
-        return (
-          <div class="important-stat-box status-effect">
+      if (!statusEffect) return null;
+
+      return (
+        <div class="important-stat-box status-effect">
+          <div class="important-stat-content">
             <div class="important-stat-value">{statusEffect.label}</div>
             {statusEffect.sublabel && <div class="important-stat-label">{statusEffect.sublabel}</div>}
           </div>
-        );
-      }
-      return null;
+        </div>
+      );
     }
 
-    const value = formatPropertyValue(prop);
-
     return (
-      <div class={{ 'important-stat-box': true, [`prop-${prop.css_class ?? ''}`]: !!prop.css_class }}>
-        <div class="important-stat-icon-value">
-          {prop.icon && <img class="important-stat-icon" src={prop.icon} alt="" />}
-          <div class="important-stat-value">{value}</div>
-        </div>
-        <div class="important-stat-label">{prop.label ?? key}</div>
-        {(prop.conditional || prop.usage_flags?.includes('ConditionallyApplied')) && (
-          <div class="important-stat-conditional">Conditional</div>
-        )}
-      </div>
-    );
-  }
-
-  private renderProperty(key: string, elevated: boolean) {
-    const item = this.itemData;
-    if (!item?.properties) return null;
-
-    const prop = item.properties[key];
-    if (!prop || !isPropertyVisible(prop)) return null;
-
-    const value = formatPropertyValue(prop);
-    const isNegative = prop.negative_attribute === true;
-
-    return [
-      <div class="attribute-line-item">
-        {prop.icon && <img class="prop-icon" src={prop.icon} alt="" />}
-        <span class={{ 'attribute-value': true, 'elevated': elevated, 'negative': isNegative }}>
-          {value}
-        </span>
-        <span class="attribute-name">{prop.label ?? key}</span>
-      </div>,
-      prop.conditional && <div class="conditional" innerHTML={prop.conditional}></div>,
-    ];
-  }
-
-  private renderBlockProperty(key: string, elevated: boolean) {
-    const item = this.itemData;
-    if (!item?.properties) return null;
-
-    const prop = item.properties[key];
-    if (!prop || !isPropertyVisible(prop)) return null;
-
-    const value = formatPropertyValue(prop);
-    const isNegative = prop.negative_attribute === true;
-
-    return (
-      <div class="block-prop-item">
-        <span class={{ 'attribute-value': true, 'elevated': elevated, 'negative': isNegative }}>
-          {value}
-        </span>
-        <span class="attribute-name">{prop.label ?? key}</span>
-      </div>
-    );
-  }
-
-  private renderSectionContent(section: TooltipSection, excludeKey?: string) {
-    return section.section_attributes.map(attr => {
-      const importantKeys = new Set(attr.important_properties ?? []);
-      const regularProps = [
-        ...(attr.properties ?? []),
-        ...(attr.elevated_properties ?? []),
-      ].filter(k => !importantKeys.has(k) && k !== excludeKey);
-      const elevatedSet = new Set(attr.elevated_properties ?? []);
-      const importantList = attr.important_properties ?? [];
-      const hasImportant = importantList.length > 0;
-
-      return [
-        attr.loc_string && (
-          <div class="mod-info-label" innerHTML={attr.loc_string}></div>
-        ),
-
-        hasImportant ? (
-          <div class={{ 'stats-block': true, 'stats-block-inline': importantList.length === 1 && regularProps.length > 0 }}>
-            <div class={{ 'important-stats-wrapper': true, [`count-${importantList.length}`]: true }}>
-              {importantList.map(k => this.renderImportantProp(k))}
-            </div>
-            {regularProps.length > 0 && (
-              <div class="stats-block-props">
-                {regularProps.map(propKey => this.renderBlockProperty(propKey, elevatedSet.has(propKey)))}
-              </div>
+      <div class={{ 'important-stat-box': true, [`prop_${prop.css_class ?? ''}`]: !!prop.css_class }}>
+        <div class="important-stat-content">
+          <div class={{ 'important-stat-icon-value': true, 'hide-important-stat-icon': !prop.icon }}>
+            {prop.icon && <img class="important-stat-icon" src={prop.icon} alt="" />}
+            <div class="important-stat-value">{this.renderFormattedValue(prop, true)}</div>
+          </div>
+          <div class="important-stat-labels">
+            <div class="important-stat-type">{prop.label ?? key}</div>
+            {(prop.conditional || prop.usage_flags?.includes('ConditionallyApplied')) && (
+              <div class="important-stat-label">Conditional</div>
             )}
           </div>
-        ) : (
-          regularProps.map(propKey => this.renderProperty(propKey, elevatedSet.has(propKey)))
-        ),
-      ];
+        </div>
+      </div>
+    );
+  }
+
+  private renderBlockProperty(key: string, elevated: boolean): VNode | null {
+    const item = this.itemData;
+    if (!item?.properties) return null;
+
+    const prop = item.properties[key];
+    if (!prop || !isPropertyVisible(prop)) return null;
+
+    return (
+      <div class="block-prop-item shrink-container">
+        <span class="attribute-value">{this.renderFormattedValue(prop)}</span>
+        <span class={{ 'attribute-name': true, 'elevated': elevated }}>{prop.label ?? key}</span>
+      </div>
+    );
+  }
+
+  private renderSectionContent(section: TooltipSection, excludedKeys = new Set<string>()) {
+    const itemProperties = this.itemData?.properties;
+
+    return section.section_attributes.map(attr => {
+      const importantKeys = new Set(attr.important_properties ?? []);
+      const isExcluded = (key: string) => excludedKeys.has(key) || this.isTimingKey(key, itemProperties?.[key]);
+
+      const importantList = (attr.important_properties ?? []).filter(key => !isExcluded(key));
+      const regularProps = [
+        ...(attr.elevated_properties ?? []),
+        ...(attr.properties ?? []),
+      ].filter(key => !importantKeys.has(key) && !isExcluded(key));
+      const elevatedSet = new Set(attr.elevated_properties ?? []);
+      const importantNodes: VNode[] = [];
+      const regularNodes: VNode[] = [];
+
+      importantList.forEach(key => {
+        const node = this.renderImportantProp(key);
+        if (node) importantNodes.push(node);
+      });
+
+      regularProps.forEach(key => {
+        const node = this.renderBlockProperty(key, elevatedSet.has(key));
+        if (node) regularNodes.push(node);
+      });
+
+      const hasImportant = importantNodes.length > 0;
+      const hasRegular = regularNodes.length > 0;
+      const hasDescription = !!attr.loc_string;
+
+      return (
+        <div
+          class={{
+            'applied-attributes-container': true,
+            'has-description': hasDescription,
+            'has-important': hasImportant,
+            'has-multiple-important': importantNodes.length >= 2,
+            [`important-count-${importantNodes.length}`]: hasImportant,
+            'no-applied-stats': !hasRegular,
+          }}
+        >
+          {attr.loc_string && <div class="mod-info-label" innerHTML={attr.loc_string}></div>}
+
+          {(hasImportant || hasRegular) && (
+            <div
+              class={{
+                'stats-block': true,
+                'stats-block-inline': importantNodes.length === 1 && hasRegular,
+                'stats-block-stacked': importantNodes.length >= 2,
+                'stats-block-no-important': !hasImportant,
+              }}
+            >
+              {hasImportant && (
+                <div class={{ 'important-stats-wrapper': true, [`count-${importantNodes.length}`]: true }}>
+                  {importantNodes}
+                </div>
+              )}
+              {hasRegular && (
+                <div class="stats-block-props">
+                  {regularNodes}
+                </div>
+              )}
+              {!hasRegular && hasImportant && <div class="stats-block-props empty"></div>}
+            </div>
+          )}
+        </div>
+      );
     });
+  }
+
+  private findSectionTimings(section: TooltipSection): { cooldown?: SectionTiming; chargeUp?: SectionTiming } {
+    const item = this.itemData;
+    if (!item?.properties) return {};
+
+    const props = item.properties;
+    const timings: { cooldown?: SectionTiming; chargeUp?: SectionTiming } = {};
+
+    const addTiming = (key: string) => {
+      const prop = props[key];
+      if (!prop || !isPropertyVisible(prop)) return;
+
+      if (key === 'AbilityChargeUpTime' || key === 'AbilityCooldownBetweenCharge') {
+        timings.chargeUp = { key, prop };
+        return;
+      }
+
+      if (key === 'ProcCooldown' || key === 'AbilityCooldown') {
+        if (!timings.cooldown || key === 'ProcCooldown') {
+          timings.cooldown = { key, prop };
+        }
+      }
+    };
+
+    for (const attr of section.section_attributes) {
+      [
+        ...(attr.important_properties ?? []),
+        ...(attr.elevated_properties ?? []),
+        ...(attr.properties ?? []),
+      ].forEach(addTiming);
+    }
+
+    if (!timings.cooldown && section.section_type === 'active') {
+      addTiming('AbilityCooldown');
+    }
+
+    return timings;
+  }
+
+  private renderTimingPill(timing: SectionTiming, kind: 'cooldown' | 'charge-up'): VNode {
+    const fallbackIcon = kind === 'cooldown' ? this.itemData?.properties?.['AbilityCooldown']?.icon : undefined;
+    const icon = timing.prop.icon || fallbackIcon;
+
+    return (
+      <span class={{ 'ability-timing': true, [kind]: true }}>
+        {icon && <img class="ability-timing-icon" src={icon} alt="" />}
+        <span class="ability-timing-value">{this.renderFormattedValue(timing.prop, true)}</span>
+      </span>
+    );
   }
 
   private renderInnateSection(section: TooltipSection) {
@@ -154,59 +258,44 @@ export class DlItemTooltip {
     );
   }
 
-  private isCooldownKey(key: string, prop: ItemProperty): boolean {
-    return prop.css_class === 'cooldown'
-      || key === 'AbilityCooldown'
-      || key === 'ProcCooldown'
-      || key === 'AbilityChargeUpTime';
-  }
-
-  private findSectionCooldown(section: TooltipSection) {
-    const item = this.itemData;
-    if (!item?.properties) return null;
-
-    // First: look for cooldown listed in section attributes
-    for (const attr of section.section_attributes) {
-      const allProps = [...(attr.properties ?? []), ...(attr.elevated_properties ?? [])];
-      for (const key of allProps) {
-        const prop = item.properties[key];
-        if (prop && this.isCooldownKey(key, prop) && isPropertyVisible(prop)) {
-          return { key, prop };
-        }
-      }
-    }
-
-    // Fallback: look for AbilityCooldown directly in item properties
-    const cooldown = item.properties['AbilityCooldown'];
-    if (cooldown && isPropertyVisible(cooldown)) {
-      return { key: 'AbilityCooldown', prop: cooldown };
-    }
-
-    return null;
-  }
-
   private renderAbilitySection(section: TooltipSection) {
     const sectionType = section.section_type ?? 'passive';
-    const cooldown = this.findSectionCooldown(section);
+    const timings = this.findSectionTimings(section);
+    const excludedKeys = new Set<string>();
+
+    if (timings.cooldown) excludedKeys.add(timings.cooldown.key);
+    if (timings.chargeUp) excludedKeys.add(timings.chargeUp.key);
 
     return (
-      <div class="section">
+      <div class={{ 'section': true, 'ability-section': true, [`ability-type-${sectionType}`]: true }}>
         <div class={{ 'ability-type-label': true, [sectionType]: true }}>
-          <span>{sectionType}</span>
-          {cooldown && (
-            <span class="ability-cooldown">
-              {(cooldown.prop.icon || this.itemData?.properties?.['AbilityCooldown']?.icon) && (
-                <img
-                  class="ability-cooldown-icon"
-                  src={cooldown.prop.icon || this.itemData!.properties!['AbilityCooldown']!.icon!}
-                  alt=""
-                />
-              )}
-              {formatPropertyValue(cooldown.prop)}
+          <span class="ability-type-text">{sectionType}</span>
+          {(timings.cooldown || timings.chargeUp) && (
+            <span class="ability-timing-group">
+              {timings.cooldown && this.renderTimingPill(timings.cooldown, 'cooldown')}
+              {timings.chargeUp && this.renderTimingPill(timings.chargeUp, 'charge-up')}
             </span>
           )}
         </div>
-        {this.renderSectionContent(section, cooldown?.key)}
+        {this.renderSectionContent(section, excludedKeys)}
+      </div>
+    );
+  }
+
+  private renderComponentGroup(label: string, items?: ComponentItemInfo[]): VNode | null {
+    if (!items || items.length === 0) return null;
+
+    return (
+      <div class="component-items-section">
+        <div class="component-items-label">{label}</div>
+        <div class="component-items-grid">
+          {items.map(item => (
+            <div class="component-item">
+              {item.image && <img class="component-item-icon" src={item.image} alt="" />}
+              <span class="component-item-name">{item.name}</span>
+            </div>
+          ))}
+        </div>
       </div>
     );
   }
@@ -219,55 +308,46 @@ export class DlItemTooltip {
     const slotColor = getSlotColor(slot);
     const headerBg = tooltipHeaderBg(slot);
     const bodyBg = tooltipBodyBg(slot);
-
-    const innateSections = item.tooltip_sections?.filter(s => s.section_type === 'innate') ?? [];
-    const abilitySections = item.tooltip_sections?.filter(s => s.section_type !== 'innate') ?? [];
+    const hasComponents = !!this.componentItemsData?.length;
+    const hasParents = !!this.parentItemsData?.length;
+    const sections = item.tooltip_sections ?? [];
 
     return (
-      <div class={{ 'tooltip': true, [`${slot}-mod`]: true }} style={{ '--slot-color': slotColor }}>
-        {/* ── Header ── */}
-        <div class="header-container" style={{ backgroundImage: `url("${headerBg}")` }}>
-          <div class="mod-name-container">
-            <div class="mod-name">{this.nameOverride ?? item.name}</div>
-            {item.cost != null && item.cost > 0 && (
-              <div class="mod-cost">
-                <img class="soul-icon" src={soulIcon()} alt="Souls" />
-                {formatCost(item.cost)}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* ── Properties body ── */}
-        <div class="properties-container" style={{ backgroundImage: `url("${bodyBg}")` }}>
-          {innateSections.map(s => this.renderInnateSection(s))}
-          {abilitySections.map(s => this.renderAbilitySection(s))}
-
-          {this.componentItemsData && this.componentItemsData.length > 0 && (
-            <div class="component-items-section">
-              <div class="component-items-label">Component:</div>
-              <div class="component-items-grid">
-                {this.componentItemsData.map(comp => (
-                  <div class="component-item">
-                    {comp.image && <img class="component-item-icon" src={comp.image} alt="" />}
-                    <span class="component-item-name">{comp.name}</span>
+      <div
+        class={{
+          'tooltip': true,
+          [`${slot}-mod`]: true,
+          'has-components': hasComponents || hasParents,
+        }}
+        style={{ '--slot-color': slotColor }}
+      >
+        <div class="tooltip-shadow">
+          <div class="tooltip-main">
+            <div class="header-container" style={{ backgroundImage: `url("${headerBg}")` }}>
+              <div class="mod-name-container shrink-container">
+                <div class="mod-name shrink">{this.nameOverride ?? item.name}</div>
+                {item.cost != null && item.cost > 0 && (
+                  <div class="mod-cost">
+                    <img class="soul-icon" src={soulIcon()} alt="Souls" />
+                    {String(item.cost)}
                   </div>
-                ))}
+                )}
               </div>
             </div>
-          )}
 
-          {this.parentItemsData && this.parentItemsData.length > 0 && (
-            <div class="component-items-section">
-              <div class="component-items-label">Component of:</div>
-              <div class="component-items-grid">
-                {this.parentItemsData.map(parent => (
-                  <div class="component-item">
-                    {parent.image && <img class="component-item-icon" src={parent.image} alt="" />}
-                    <span class="component-item-name">{parent.name}</span>
-                  </div>
-                ))}
-              </div>
+            <div class="properties-container" style={{ backgroundImage: `url("${bodyBg}")` }}>
+              {sections.map(section => (
+                section.section_type === 'innate'
+                  ? this.renderInnateSection(section)
+                  : this.renderAbilitySection(section)
+              ))}
+            </div>
+          </div>
+
+          {(hasComponents || hasParents) && (
+            <div class="component-items-shell" style={{ backgroundImage: `url("${bodyBg}")` }}>
+              {this.renderComponentGroup('Component:', this.componentItemsData)}
+              {this.renderComponentGroup('Component of:', this.parentItemsData)}
             </div>
           )}
         </div>
